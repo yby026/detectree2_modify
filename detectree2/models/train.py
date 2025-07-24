@@ -51,6 +51,7 @@ from detectron2.utils.visualizer import ColorMode, Visualizer
 from detectree2.models.outputs import clean_crowns
 from detectree2.preprocessing.tiling import load_class_mapping
 
+from detectree2.da_mask_rcnn import DA_MaskRCNN
 
 class FlexibleDatasetMapper(DatasetMapper):
     """
@@ -698,6 +699,11 @@ class MyTrainer(DefaultTrainer):
         """
         return build_detection_test_loader(cfg, dataset_name, mapper=FlexibleDatasetMapper(cfg, is_train=False))
 
+    @classmethod
+    def build_model(cls, cfg):
+        # this will pick up META_ARCH = "DA_MaskRCNN"
+        return DA_MaskRCNN.from_config(cfg)
+
 
 def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     """Get the tree dictionaries.
@@ -975,6 +981,10 @@ def setup_cfg(
     num_bands=3,
     class_mapping_file=None,
     visualize_training=False,
+    domain_adapt: bool = False,
+    domain_num_classes: int = 2,
+    domain_loss_weight: float = 0.5,
+    gradrev_lambda: float = 1.0,
 ):
     """Set up config object # noqa: D417.
 
@@ -1057,6 +1067,12 @@ def setup_cfg(
         cfg.VALIDATION_VIS_PERIOD = 0
 
     cfg.DATALOADER.FILTER_EMPTY_ANNOTATIONS = False
+
+        # ── inject DA settings ──
+    cfg.MODEL.DOMAIN_ADAPT = domain_adapt
+    cfg.MODEL.DOMAIN_NUM_CLASSES = domain_num_classes
+    cfg.SOLVER.DOMAIN_LOSS_WEIGHT = domain_loss_weight
+    cfg.SOLVER.GRADREV_LAMBDA = gradrev_lambda
 
     return cfg
 
