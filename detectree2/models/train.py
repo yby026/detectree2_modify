@@ -981,10 +981,10 @@ def setup_cfg(
     num_bands=3,
     class_mapping_file=None,
     visualize_training=False,
-    domain_adapt: bool = False,
-    domain_num_classes: int = 2,
-    domain_loss_weight: float = 0.5,
-    gradrev_lambda: float = 1.0,
+    domain_adapt: bool = False,  # switch for domain adaptation, default is False
+    domain_num_classes: int = 2,  # number of domain labels, default is 2 (source and target)
+    domain_loss_weight: float = 0.5, # the adversarial loss, default is 0.5 (balanced)
+    gradrev_lambda: float = 0, # lambda for gradient reversal layer, default is 0 (no domain loss)
 ):
     """Set up config object # noqa: D417.
 
