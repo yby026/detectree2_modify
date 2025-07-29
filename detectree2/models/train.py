@@ -863,6 +863,71 @@ def get_filenames(directory: str):
     return dataset_dicts, mode
 
 
+def register_dataset(
+    dir_path: str,
+    name: str,
+    *,
+    domain_type: str = "source",
+    labels: bool = True,
+    val_fold: int = None,
+    class_mapping_file: str = None
+):
+    """
+    Registers datasets with domain metadata
+    """
+    # Load class mapping if provided
+    if class_mapping_file:
+        class_mapping = load_class_mapping(class_mapping_file)
+        thing_classes = list(class_mapping.keys())
+    else:
+        thing_classes = ["tree"]  # Default class
+
+    # Register labeled datasets
+    if labels:
+        if val_fold is not None:
+            for split in ["train", "val"]:
+                ds_name = f"{name}_{split}"
+                DatasetCatalog.register(
+                    ds_name,
+                    lambda s=split: combine_dicts(
+                        dir_path, val_fold, s, class_mapping
+                    )
+                )
+                meta = MetadataCatalog.get(ds_name)
+                meta.set(
+                    thing_classes=thing_classes,
+                    domain_type=domain_type,
+                    dataset_name=ds_name  # Critical for DA
+                )
+        else:
+            ds_name = f"{name}_full"
+            DatasetCatalog.register(
+                ds_name,
+                lambda: combine_dicts(dir_path, 0, "full", class_mapping)
+            )
+            meta = MetadataCatalog.get(ds_name)
+            meta.set(
+                thing_classes=thing_classes,
+                domain_type=domain_type,
+                dataset_name=ds_name
+            )
+    # Unlabeled datasets
+    else:
+        def unlabeled_loader():
+            return [
+                {"file_name": os.path.join(dir_path, fn), "dataset_name": name}
+                for fn in os.listdir(dir_path) 
+                if fn.lower().endswith((".jpg", ".png", ".tif"))
+            ]
+
+        ds_name = f"{name}_unlabeled"
+        DatasetCatalog.register(ds_name, unlabeled_loader)
+        MetadataCatalog.get(ds_name).set(
+            thing_classes=[],
+            domain_type=domain_type,
+            dataset_name=ds_name
+        )
+
 def register_train_data(train_location, name: str = "tree", val_fold=None, class_mapping_file=None):
     """Register data for training and (optionally) validation.
 
