@@ -51,7 +51,7 @@ from detectron2.utils.visualizer import ColorMode, Visualizer
 from detectree2.models.outputs import clean_crowns
 from detectree2.preprocessing.tiling import load_class_mapping
 
-from detectree2.da_mask_rcnn import DA_MaskRCNN
+from detectree2.models.da_mask_rcnn import DA_MaskRCNN
 
 class FlexibleDatasetMapper(DatasetMapper):
     """
@@ -120,6 +120,14 @@ class FlexibleDatasetMapper(DatasetMapper):
                     raise ValueError(f"Image data is None for file: {dataset_dict['file_name']}")
                 # Transpose image dimensions to match expected format (H, W, C)
                 img = np.transpose(img, (1, 2, 0)).astype("float32")
+
+            # Basic band-count guard for multispectral inputs
+            expected_bands = int(getattr(self.cfg.INPUT, "NUM_IN_CHANNELS", img.shape[2]))
+            if img.shape[2] != expected_bands:
+                self.logger.warning(
+                    f"Loaded image has {img.shape[2]} bands but cfg expects {expected_bands}. "
+                    "This may cause a model input mismatch."
+                )
 
             # Size check similar to utils.check_image_size
             if img.shape[:2] != (dataset_dict.get("height"), dataset_dict.get("width")):
@@ -492,6 +500,26 @@ class MyTrainer(DefaultTrainer):
             # The checkpoint stores the training iteration that just finished, thus we start
             # at the next iteration
             self.start_iter = self.iter + 1
+        try:
+            desired_channels = int(getattr(self.cfg.INPUT, "NUM_IN_CHANNELS", 3))
+            model_in_channels = int(self.model.backbone.bottom_up.stem.conv1.weight.shape[1])
+        except Exception:
+            desired_channels = 3
+            model_in_channels = 3
+
+        if self.cfg.IMGMODE == "ms" and desired_channels != model_in_channels:
+            raise RuntimeError(
+                f"Input channel mismatch: cfg expects {desired_channels} bands for multispectral input, "
+                f"but model conv1 expects {model_in_channels}. Please adapt the backbone's first conv to "
+                f"{desired_channels} channels or use 3-band inputs."
+            )
+
+        if self.cfg.IMGMODE == "ms" and desired_channels != model_in_channels:
+            raise RuntimeError(
+                f"Input channel mismatch: cfg expects {desired_channels} bands for multispectral input, "
+                f"but model conv1 expects {model_in_channels}. Please adapt the backbone's first conv to "
+                f"{desired_channels} channels or use 3-band inputs."
+            )
 
         if self.cfg.MODEL.WEIGHTS:
             device = self.model.backbone.bottom_up.stem.conv1.weight.device
@@ -529,7 +557,8 @@ class MyTrainer(DefaultTrainer):
                 )
                 with torch.no_grad():
                     self.model.backbone.bottom_up.stem.conv1.weight[:, :3] = checkpoint[:, :3]
-                multiply_conv1_weights(self.model)
+                #multiply_conv1_weights(self.model)
+                # Do not silently expand conv1 here; rely on explicit model adaptation for MS
                 self.model.backbone.bottom_up.stem.conv1.weight.to(device)
                 self.model.backbone.bottom_up.stem.conv1.weight.requires_grad = req_grad
 
@@ -700,7 +729,7 @@ class MyTrainer(DefaultTrainer):
         return build_detection_test_loader(cfg, dataset_name, mapper=FlexibleDatasetMapper(cfg, is_train=False))
 
     @classmethod
-    def build_model(cls, cfg):
+    def build_DA(cls, cfg):
         # this will pick up META_ARCH = "DA_MaskRCNN"
         return DA_MaskRCNN.from_config(cfg)
 
@@ -731,7 +760,10 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
         # Make sure we have the correct height and width
         # If image path ends in .png use cv2 to get height and width else if image path ends in .tif use rasterio
         if filename.endswith(".png"):
-            height, width = cv2.imread(filename).shape[:2]
+            img = cv2.imread(filename)
+            if img is None:
+                continue
+            height, width = img.shape[:2]
         elif filename.endswith(".tif"):
             with rasterio.open(filename) as src:
                 height, width = src.shape
@@ -761,7 +793,12 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
                 category_id = 0  # Default to "tree" if no class mapping is provided
 
             obj = {
-                "bbox": [np.min(px), np.min(py), np.max(px), np.max(py)],
+                "bbox": [
+                    np.min(np.array(px)),
+                    np.min(np.array(py)),
+                    np.max(np.array(px)),
+                    np.max(np.array(py)),
+                ],
                 "bbox_mode": BoxMode.XYXY_ABS,
                 "segmentation": [poly],
                 "category_id": category_id,
@@ -916,7 +953,7 @@ def register_dataset(
         def unlabeled_loader():
             return [
                 {"file_name": os.path.join(dir_path, fn), "dataset_name": name}
-                for fn in os.listdir(dir_path) 
+                for fn in os.listdir(dir_path)
                 if fn.lower().endswith((".jpg", ".png", ".tif"))
             ]
 
@@ -953,7 +990,8 @@ def register_train_data(train_location, name: str = "tree", val_fold=None, class
             MetadataCatalog.get(name + "_" + d).set(thing_classes=thing_classes)
     else:
         DatasetCatalog.register(name + "_" + "full",
-                                lambda d=d: combine_dicts(train_location, 0, "full", class_mapping=class_mapping))
+                                ## lambda d=d: combine_dicts(train_location, 0, "full", class_mapping=class_mapping))
+                                lambda: combine_dicts(train_location, 0, "full", class_mapping=class_mapping))
         MetadataCatalog.get(name + "_" + "full").set(thing_classes=thing_classes)
 
 
@@ -990,7 +1028,7 @@ def remove_registered_data(name="tree"):
         MetadataCatalog.remove(name + "_" + d)
 
 
-def register_test_data(test_location, name="tree"):
+def register_test_data(test_location, name="tree", class_mapping_file=None):
     """Register data for testing.
 
     Args:
@@ -1117,13 +1155,15 @@ def setup_cfg(
     cfg.RESIZE = resize
     cfg.INPUT.MIN_SIZE_TRAIN = 1000
     cfg.IMGMODE = imgmode  # "rgb" or "ms" (multispectral)
+        # Track intended input channels for early validation
+    cfg.INPUT.NUM_IN_CHANNELS = num_bands
     if num_bands > 3:
         # Adjust PIXEL_MEAN and PIXEL_STD for the number of bands
         default_pixel_mean = cfg.MODEL.PIXEL_MEAN
         default_pixel_std = cfg.MODEL.PIXEL_STD
         # Extend or truncate the PIXEL_MEAN and PIXEL_STD based on num_bands
         cfg.MODEL.PIXEL_MEAN = (default_pixel_mean * (num_bands // len(default_pixel_mean)) +
-                                default_pixel_mean[:num_bands % len(default_pixel_mean)])
+                               default_pixel_mean[:num_bands % len(default_pixel_mean)])
         cfg.MODEL.PIXEL_STD = (default_pixel_std * (num_bands // len(default_pixel_std)) +
                                default_pixel_std[:num_bands % len(default_pixel_std)])
     if visualize_training:

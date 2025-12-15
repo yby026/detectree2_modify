@@ -13,7 +13,8 @@
 import os
 import sys
 
-sys.path.insert(0, os.path.abspath("../detectree2"))
+# Add repository root to sys.path so autodoc can import the package
+sys.path.insert(0, os.path.abspath("../../"))
 
 # -- Project information -----------------------------------------------------
 
@@ -22,7 +23,7 @@ copyright = "2023, James Ball"
 author = "James Ball"
 
 # The full version, including alpha/beta/rc tags
-release = "1.0.8"
+release = "2.1.1"
 
 # -- General configuration ---------------------------------------------------
 
@@ -30,10 +31,43 @@ release = "1.0.8"
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
-    "sphinx.ext.autodoc",
-    "sphinx.ext.autosectionlabel",  # cannot get this to work
-    "sphinx.ext.todo",  # see contributing guide
-    "nbsphinx",  # enables *.ipynb to be rendered in the docs as pages / notebooks
+    "sphinx.ext.autosummary",
+    "sphinx.ext.napoleon",
+    "sphinx.ext.viewcode",
+    "sphinx.ext.autosectionlabel",  # section refs
+    "sphinx.ext.todo",              # see contributing guide
+    "nbsphinx",                     # render notebooks
+]
+
+# Autodoc / autosummary settings
+autosummary_generate = True
+autodoc_default_options = {
+    "members": True,
+    "undoc-members": False,
+    "inherited-members": False,
+    "show-inheritance": True,
+}
+
+# Mock heavy optional dependencies to avoid import failures on docs build
+autodoc_mock_imports = [
+    "torch",
+    "detectron2",
+    "detectron2.engine",
+    "detectron2.config",
+    "detectron2.data",
+    "detectron2.layers",
+    "detectron2.structures",
+    "detectron2.utils",
+    "detectron2.evaluation",
+    "detectron2.checkpoint",
+    "detectron2.model_zoo",
+    "cv2",
+    "rasterio",
+    "geopandas",
+    "shapely",
+    "fiona",
+    "rtree",
+    "pycocotools",
 ]
 autosectionlabel_prefix_document = True
 todo_include_todos = True

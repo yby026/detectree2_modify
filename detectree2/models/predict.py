@@ -11,6 +11,7 @@ import numpy as np
 import rasterio
 from detectron2.engine import DefaultPredictor
 from detectron2.evaluation.coco_evaluation import instances_to_coco_json
+from detectron2.data import MetadataCatalog
 
 from detectree2.models.train import get_filenames, get_tree_dicts
 
@@ -26,6 +27,7 @@ def predict_on_data(
     eval=False,
     save: bool = True,
     num_predictions=0,
+    multiclass: bool = False,
 ):
     """Make predictions on tiled data.
 
@@ -60,16 +62,30 @@ def predict_on_data(
         dataset_dicts) if num_predictions == 0 else num_predictions
 
     print(f"Predicting {num_to_pred} files in mode {mode}")
+    class_names = None
+    if multiclass:
+        # Try to get class names from metadata if they exist
+        if len(predictor.cfg.DATASETS.TRAIN) > 0:
+            metadata = MetadataCatalog.get(predictor.cfg.DATASETS.TRAIN[0])
+        else:
+            metadata = None
+
+        if metadata and hasattr(metadata, "thing_classes") and metadata.thing_classes:
+            class_names = metadata.thing_classes
+        else:
+            num_classes = predictor.cfg.MODEL.ROI_HEADS.NUM_CLASSES
+            class_names = [f"class_{i}" for i in range(num_classes)]
 
     for i, d in enumerate(dataset_dicts[:num_to_pred], start=1):
         file_name = d["file_name"]
         file_ext = os.path.splitext(file_name)[1].lower()
         if file_ext == ".png":
             # RGB image, read with cv2
-            img = cv2.imread(file_name)
-            if img is None:
+            cv_img = cv2.imread(file_name)
+            if cv_img is None:
                 print(f"Failed to read image {file_name} with cv2.")
                 continue
+            img = np.array(cv_img)  # Explicitly convert to numpy array
         elif file_ext == ".tif":
             # Multispectral image, read with rasterio
             with rasterio.open(file_name) as src:
@@ -81,21 +97,30 @@ def predict_on_data(
             continue
 
         outputs = predictor(img)
+        instances = outputs["instances"].to("cpu")
 
-        # Create the output file name
+        if not multiclass:
+            instances = instances[instances.pred_classes == 0]
+
         file_name_only = os.path.basename(file_name)
         file_name_json = os.path.splitext(file_name_only)[0] + ".json"
         output_file = os.path.join(pred_dir, f"Prediction_{file_name_json}")
 
         if save:
             # Save predictions to JSON file
-            evaluations = instances_to_coco_json(outputs["instances"].to("cpu"),
+            evaluations = instances_to_coco_json(instances,
                                                  file_name)
+            if multiclass:
+                for pred in evaluations:
+                    cid = int(pred["category_id"])
+                    pred["category_name"] = class_names[cid]
+
             with open(output_file, "w") as dest:
                 json.dump(evaluations, dest)
 
         if i % 50 == 0:
             print(f"Predicted {i} files of {total_files}")
+
 
 
 if __name__ == "__main__":
