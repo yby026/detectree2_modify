@@ -136,6 +136,8 @@ def process_tile(img_path: str,
                  ignore_bands_indices: List[int] = [],
                  use_convex_mask: bool = True,
                  enhance_rgb_contrast: bool = True):
+                 use_convex_mask: bool = True,
+                 enhance_rgb_contrast: bool = True):
     """Process a single tile for making predictions.
 
     Args:
@@ -185,8 +187,8 @@ def process_tile(img_path: str,
 
             mask_tif = None
             if mask_gdf is not None:
-                #if mask_gdf.crs != data.crs:
-                #    mask_gdf = mask_gdf.to_crs(data.crs) #TODO is this necessary?
+                # if mask_gdf.crs != data.crs:
+                #     mask_gdf = mask_gdf.to_crs(data.crs) # TODO is this necessary?
 
                 mask_tif = rasterio.features.geometry_mask([geom for geom in mask_gdf.geometry],
                                                            transform=out_transform,
@@ -231,6 +233,13 @@ def process_tile(img_path: str,
                     invalid / totalpix,
                 )
 
+            if enhance_rgb_contrast:
+                # rescale image to 1-255 (0 is reserved for nodata)
+                min_vals, max_vals = np.percentile(
+                    out_img.reshape(3, -1)[:, ~nan_mask.reshape(-1).astype(bool)], [0.2, 99.8])
+
+                out_img = (out_img - min_vals) / (max_vals - min_vals) * 254 + 1
+
             # Apply nan mask
             if enhance_rgb_contrast:
                 # rescale image to 1-255 (0 is reserved for nodata)
@@ -267,9 +276,8 @@ def process_tile(img_path: str,
                 dest.write(out_img)
 
             r, g, b = out_img[0], out_img[1], out_img[2]
-            rgb = np.dstack((b, g, r))  # Reorder for cv2 (BGRA)
+            rgb = np.dstack((b, g, r))  # type: ignore[attr-defined] # Reorder for cv2 (BGRA)
 
-            # Rescale to 0-255 if necessary
             if not enhance_rgb_contrast:
                 # If not enhancing contrast, ensure the dtype is uint8
                 if dtype_bool:
@@ -278,6 +286,7 @@ def process_tile(img_path: str,
                     rgb = rgb.astype(np.float32)
                 np.clip(rgb, 0, 255, out=rgb)  # type: ignore[call-arg]
 
+            cv2.imwrite(str(out_path_root.with_suffix(".png").resolve()), rgb.astype(np.uint8))
             cv2.imwrite(str(out_path_root.with_suffix(".png").resolve()), rgb.astype(np.uint8))
 
             if overlapping_crowns is not None:
@@ -361,8 +370,8 @@ def process_tile_ms(img_path: str,
 
             mask_tif = None
             if mask_gdf is not None:
-                #if mask_gdf.crs != data.crs:
-                #    mask_gdf = mask_gdf.to_crs(data.crs) #TODO is this necessary?
+                # if mask_gdf.crs != data.crs:
+                #     mask_gdf = mask_gdf.to_crs(data.crs) # TODO is this necessary?
 
                 mask_tif = rasterio.features.geometry_mask([geom for geom in mask_gdf.geometry],
                                                            transform=out_transform,
@@ -418,8 +427,10 @@ def process_tile_ms(img_path: str,
             else:
                 out_img = (out_img - min_vals) * 254 / (max_vals - min_vals) + 1
 
-            # additional clip to make sure
-            out_img = np.clip(out_img.astype(np.float32), 1.0, 255.0)
+            # additional clip to make sure (use float32 bounds for mypy compatibility)
+            out_img = np.clip(
+                out_img.astype(np.float32), np.float32(1.0), np.float32(255.0)
+            )
 
             # Apply nan mask
             out_img[np.broadcast_to((nan_mask == 1)[None, :, :], out_img.shape)] = 0.0  # type: ignore[attr-defined]
@@ -616,7 +627,6 @@ def _calculate_tile_placements(
         y_offset = (combined_tiles_height - area_height) / 2
 
         logger.info("Starting Tile Placement Generation")
-        #coordinates = []
         for row in range(required_tiles_y):
             bar = gpd.GeoSeries([
                 box(crowns.total_bounds[0] - x_offset, crowns.total_bounds[1] - y_offset + row * tile_height,
@@ -640,7 +650,7 @@ def _calculate_tile_placements(
                     coordinates.append(
                         (int(intersection.total_bounds[0] - x_intersection_offset) + col * tile_width + tile_width // 2,
                          int(crowns.total_bounds[1] - y_offset) + row * tile_height + tile_height // 2))
-        logger.info(f"Finished Tile Placement Generation")
+        logger.info("Finished Tile Placement Generation")
     else:
         raise ValueError('Unsupported tile_placement method. Must be "grid" or "adaptive"')
 
@@ -675,16 +685,73 @@ def calculate_image_statistics(file_path,
         def calc_on_everything():
             logger.info("Processing entire image...")
             band_stats = []
+
+            # Define chunk size for reading (e.g. 2048 rows)
+            chunk_height = 2048
+
             for band_idx in range(1, src.count + 1):
                 if band_idx - 1 in ignore_bands_indices:
                     continue
-                band = src.read(band_idx).astype(float)
-                # Mask out bad values
-                mask = (np.isnan(band) | np.isin(band, values_to_ignore))
-                valid_data = band[~mask]
 
-                if valid_data.size > 0:
-                    min_val, max_val = np.percentile(valid_data, [1, 99])
+                # Accumulators for exact stats
+                total_count = 0
+                total_sum = 0.0
+                total_sum_sq = 0.0
+                global_min = float('inf')
+                global_max = float('-inf')
+
+                # Buffer for percentiles
+                percentile_buffer = []
+                buffer_size = 0
+                MAX_BUFFER = 5_000_000 # 5 million pixels ~ 40MB
+
+                for row_off in tqdm(range(0, height, chunk_height), desc=f"Calculating stats for band {band_idx}", leave=False):
+                    h = min(chunk_height, height - row_off)
+                    window = rasterio.windows.Window(0, row_off, width, h)
+
+                    band_chunk = src.read(band_idx, window=window).astype(float)
+
+                    # Mask out bad values
+                    mask = (np.isnan(band_chunk) | np.isin(band_chunk, values_to_ignore))
+                    valid_chunk = band_chunk[~mask]
+
+                    if valid_chunk.size > 0:
+                        # Update exact stats
+                        c_min = np.min(valid_chunk)
+                        c_max = np.max(valid_chunk)
+                        c_sum = np.sum(valid_chunk)
+                        c_sum_sq = np.sum(valid_chunk ** 2)
+                        c_count = valid_chunk.size
+
+                        if c_min < global_min: global_min = c_min
+                        if c_max > global_max: global_max = c_max
+                        total_sum += c_sum
+                        total_sum_sq += c_sum_sq
+                        total_count += c_count
+
+                        # Update percentile buffer
+                        percentile_buffer.append(valid_chunk)
+                        buffer_size += c_count
+
+                        if buffer_size > MAX_BUFFER:
+                            merged = np.concatenate(percentile_buffer)
+                            # Downsample to keep memory usage low
+                            merged = merged[::2]
+                            percentile_buffer = [merged]
+                            buffer_size = merged.size
+
+                if total_count > 0:
+                    # Finalize percentiles
+                    if percentile_buffer:
+                        final_buffer = np.concatenate(percentile_buffer)
+                        min_val, max_val = np.percentile(final_buffer, [1, 99])
+                    else:
+                        min_val, max_val = global_min, global_max
+
+                    mean_val = total_sum / total_count
+                    # Variance = (SumSq / N) - Mean^2
+                    variance = (total_sum_sq / total_count) - (mean_val ** 2)
+                    std_dev = np.sqrt(max(0, variance))
 
                     stats = {
                         "mean": float(np.mean(valid_data)),
@@ -694,6 +761,10 @@ def calculate_image_statistics(file_path,
                     }
                 else:
                     stats = {
+                        "mean": np.nan,
+                        "min": np.nan,
+                        "max": np.nan,
+                        "std_dev": np.nan,
                         "mean": np.nan,
                         "min": np.nan,
                         "max": np.nan,
@@ -837,10 +908,11 @@ def tile_data(
 
     tile_coordinates = _calculate_tile_placements(img_path, buffer, tile_width, tile_height, crowns, tile_placement,
                                                   overlapping_tiles)
+
     image_statistics = calculate_image_statistics(img_path,
                                                   values_to_ignore=additional_nodata,
                                                   mode=mode,
-                                                  ignore_bands_indices=ignore_bands_indices)
+                                                  ignore_bands_indices=ignore_bands_indices) if mode == "ms" else None # Only needed for multispectral data
 
     tile_args = [
         (img_path, out_dir, buffer, tile_width, tile_height, dtype_bool, minx, miny, crs, tilename, crowns, threshold,
@@ -1083,7 +1155,7 @@ def create_RGB_from_MS(tile_folder_path: Union[str, Path],
             # Write out the PNG (shape must be (H, W, 3))
             output_png = out_path / f"{tif_file.stem}.png"
             # Move axis from (bands, H, W) -> (H, W, bands)
-            png_ready = np.moveaxis(data, 0, -1).astype(np.uint8)
+            png_ready = np.moveaxis(data, 0, -1).astype(np.uint8)  # type: ignore[attr-defined]
             # We expect the order to be [band1, band2, band3], so interpret as R,G,B
             cv2.imwrite(str(output_png), cv2.cvtColor(png_ready, cv2.COLOR_RGB2BGR))
 

@@ -129,6 +129,14 @@ class FlexibleDatasetMapper(DatasetMapper):
                     "This may cause a model input mismatch."
                 )
 
+            # Basic band-count guard for multispectral inputs
+            expected_bands = int(getattr(self.cfg.INPUT, "NUM_IN_CHANNELS", img.shape[2]))
+            if img.shape[2] != expected_bands:
+                self.logger.warning(
+                    f"Loaded image has {img.shape[2]} bands but cfg expects {expected_bands}. "
+                    "This may cause a model input mismatch."
+                )
+
             # Size check similar to utils.check_image_size
             if img.shape[:2] != (dataset_dict.get("height"), dataset_dict.get("width")):
                 self.logger.warning(
@@ -559,6 +567,7 @@ class MyTrainer(DefaultTrainer):
                     self.model.backbone.bottom_up.stem.conv1.weight[:, :3] = checkpoint[:, :3]
                 #multiply_conv1_weights(self.model)
                 # Do not silently expand conv1 here; rely on explicit model adaptation for MS
+                # Do not silently expand conv1 here; rely on explicit model adaptation for MS
                 self.model.backbone.bottom_up.stem.conv1.weight.to(device)
                 self.model.backbone.bottom_up.stem.conv1.weight.requires_grad = req_grad
 
@@ -764,6 +773,10 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
             if img is None:
                 continue
             height, width = img.shape[:2]
+            img = cv2.imread(filename)
+            if img is None:
+                continue
+            height, width = img.shape[:2]
         elif filename.endswith(".tif"):
             with rasterio.open(filename) as src:
                 height, width = src.shape
@@ -782,7 +795,7 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
                 print("Skipping annotation of type", anno["type"], "in file", filename)
                 continue
             px = [a[0] for a in anno["coordinates"][0]]
-            py = [np.array(height) - a[1] for a in anno["coordinates"][0]]
+            py = [height - a[1] for a in anno["coordinates"][0]]
             poly = [(x, y) for x, y in zip(px, py)]
             poly = [p for x in poly for p in x]
 
@@ -793,6 +806,12 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
                 category_id = 0  # Default to "tree" if no class mapping is provided
 
             obj = {
+                "bbox": [
+                    np.min(np.array(px)),
+                    np.min(np.array(py)),
+                    np.max(np.array(px)),
+                    np.max(np.array(py)),
+                ],
                 "bbox": [
                     np.min(np.array(px)),
                     np.min(np.array(py)),
@@ -836,10 +855,10 @@ def combine_dicts(root_dir: str,
     Returns:
         List of combined dictionaries from the specified directories.
     """
-    # Get the list of directories within the root directory
-    train_dirs = [
+    # Get the list of directories within the root directory, sorted alphabetically
+    train_dirs = sorted([
         os.path.join(root_dir, dir) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))
-    ]
+    ])
     # Handle the different modes for combining dictionaries
     if mode == "train":
         # Exclude the validation directory from the list of directories
@@ -1157,12 +1176,15 @@ def setup_cfg(
     cfg.IMGMODE = imgmode  # "rgb" or "ms" (multispectral)
         # Track intended input channels for early validation
     cfg.INPUT.NUM_IN_CHANNELS = num_bands
+    # Track intended input channels for early validation
+    cfg.INPUT.NUM_IN_CHANNELS = num_bands
     if num_bands > 3:
         # Adjust PIXEL_MEAN and PIXEL_STD for the number of bands
         default_pixel_mean = cfg.MODEL.PIXEL_MEAN
         default_pixel_std = cfg.MODEL.PIXEL_STD
         # Extend or truncate the PIXEL_MEAN and PIXEL_STD based on num_bands
         cfg.MODEL.PIXEL_MEAN = (default_pixel_mean * (num_bands // len(default_pixel_mean)) +
+                               default_pixel_mean[:num_bands % len(default_pixel_mean)])
                                default_pixel_mean[:num_bands % len(default_pixel_mean)])
         cfg.MODEL.PIXEL_STD = (default_pixel_std * (num_bands // len(default_pixel_std)) +
                                default_pixel_std[:num_bands % len(default_pixel_std)])

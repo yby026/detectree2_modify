@@ -15,6 +15,8 @@ import sys
 
 # Add repository root to sys.path so autodoc can import the package
 sys.path.insert(0, os.path.abspath("../../"))
+# Add repository root to sys.path so autodoc can import the package
+sys.path.insert(0, os.path.abspath("../../"))
 
 # -- Project information -----------------------------------------------------
 
@@ -31,6 +33,7 @@ release = "2.1.1"
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom
 # ones.
 extensions = [
+    "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
     "sphinx.ext.napoleon",
     "sphinx.ext.viewcode",

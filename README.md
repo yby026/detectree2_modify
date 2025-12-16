@@ -4,18 +4,18 @@
 </p>
 
 
- [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Detectree CI](https://github.com/patball1/detectree2/actions/workflows/python-ci.yml/badge.svg)](https://github.com/patball1/detectree2/actions/workflows/python-ci.yml) [![PEP8](https://img.shields.io/badge/code%20style-pep8-orange.svg)](https://www.python.org/dev/peps/pep-0008/) [![DOI](https://zenodo.org/badge/470698486.svg)](https://zenodo.org/badge/latestdoi/470698486)
+ [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT) [![Detectree CI](https://github.com/patball1/detectree2/actions/workflows/python-ci.yml/badge.svg)](https://github.com/patball1/detectree2/actions/workflows/python-ci.yml) [![PEP8](https://img.shields.io/badge/code%20style-pep8-orange.svg)](https://www.python.org/dev/peps/pep-0008/) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.17367058.svg)](https://doi.org/10.5281/zenodo.17367058)
 
 
 <!-- <a href="https://github.com/hhatto/autopep8"><img alt="Code style: autopep8" src="https://img.shields.io/badge/code%20style-autopep8-000000.svg"></a> -->
 
 
 Python package for automatic tree crown delineation in aerial RGB and multispectral imagery based on Mask R-CNN. Pre-trained models can be picked in the [`model_garden`](https://github.com/PatBall1/detectree2/tree/master/model_garden).
-A tutorial on how to prepare data, train models and make predictions is available [here](https://patball1.github.io/detectree2/tutorial.html). For questions, collaboration proposals and requests for data email [James Ball](mailto:ball.jgc@gmail.com). Some example data is available to download [here](https://doi.org/10.5281/zenodo.8136161).
+Tutorials on how to prepare data, train models and make predictions are available [here](https://patball1.github.io/detectree2/tutorials/index.html). For questions, collaboration proposals and requests for data email [James Ball](mailto:ball.jgc@gmail.com). Some example data is available to download [here](https://doi.org/10.5281/zenodo.8136161).
 
-Detectree2是一个基于Mask R-CNN的自动树冠检测与分割的Python包。您可以在[`model_garden`](https://github.com/PatBall1/detectree2/tree/master/model_garden)中选择预训练模型。[这里](https://patball1.github.io/detectree2/tutorial.html)提供了如何准备数据、训练模型和进行预测的教程。如果有任何问题，合作提案或者需要样例数据，可以邮件联系[James Ball](mailto:ball.jgc@gmail.com)。一些示例数据可以在[这里](https://doi.org/10.5281/zenodo.8136161)下载。
+Detectree2是一个基于Mask R-CNN的自动树冠检测与分割的Python包。您可以在[`model_garden`](https://github.com/PatBall1/detectree2/tree/master/model_garden)中选择预训练模型。[这里](https://patball1.github.io/detectree2/tutorials/index.html)提供了如何准备数据、训练模型和进行预测的教程。如果有任何问题，合作提案或者需要样例数据，可以邮件联系[James Ball](mailto:ball.jgc@gmail.com)。一些示例数据可以在[这里](https://doi.org/10.5281/zenodo.8136161)下载。
 
-| <a href="https://www.conservation.cam.ac.uk/"><img src="./report/cam_logo.png" width="140"></a> | <sup> Code developed by James Ball, Seb Hickman, Thomas Koay, Oscar Jiang, Luran Wang, Panagiotis Ioannou, James Hinton and Matthew Archer in the [Forest Ecology and Conservation Group](https://coomeslab.org/) at the University of Cambridge. The Forest Ecology and Conservation Group is led by Professor David Coomes and is part of the University of Cambridge [Conservation Research Institute](https://www.conservation.cam.ac.uk/). </sup>|
+| <a href="https://www.conservation.cam.ac.uk/"><img src="./report/cam_logo.png" width="140"></a> | <sup> Code developed by James Ball, Seb Hickman, Christopher Kotthoff, Thomas Koay, Oscar Jiang, Luran Wang, Panagiotis Ioannou, James Hinton and Matthew Archer in the [Forest Ecology and Conservation Group](https://coomeslab.org/) at the University of Cambridge. The Forest Ecology and Conservation Group is led by Professor David Coomes and is part of the University of Cambridge [Conservation Research Institute](https://www.conservation.cam.ac.uk/). </sup>|
 | :---: | :--- |
 
 
@@ -36,7 +36,7 @@ Independent validation has been performed on a temperate deciduous forest in Jap
 > *Detectree2 could estimate tree crown areas accurately, highlighting its potential and robustness for tree detection and delineation*
 
 Gan, Y., Wang, Q., and Iio, A. (2023).
-Tree Crown Detection and Delineation in a Temperate Deciduous Forest from UAV RGB Imagery Using Deep Learning Approaches: Effects of Spatial Resolution and Species Characteristics. 
+Tree Crown Detection and Delineation in a Temperate Deciduous Forest from UAV RGB Imagery Using Deep Learning Approaches: Effects of Spatial Resolution and Species Characteristics.
 *Remote Sensing*. 15(3):778. [https://doi.org/10.3390/rs15030778](https://doi.org/10.3390/rs15030778)
 
 ## Requirements
@@ -68,7 +68,7 @@ Detectree2, based on the [Detectron2](https://github.com/facebookresearch/detect
 trees in aerial images. It has been designed to delineate trees in challenging dense tropical forests for a range of
 ecological applications.
 
-This [tutorial](https://patball1.github.io/detectree2/tutorial.html) takes you through the key steps.
+This [tutorial](https://patball1.github.io/detectree2/tutorials/index.html) takes you through the key steps.
 [Example Colab notebooks](https://github.com/PatBall1/detectree2/tree/master/notebooks/colab) are also available but are
 not updated frequently so functions and parameters may need to be adjusted to get things working properly.
 
@@ -129,42 +129,58 @@ Here is an example image of the predictions made by Detectree2.
 ## Project Organization
 
 ```
+├── .github/                 # CI workflows, badges and logos
+│   └── workflows/
+├── CODE_OF_CONDUCT.md
 ├── LICENSE
 ├── Makefile
 ├── README.md
-├── detectree2
-│   ├── data_loading
-│   ├── models
-│   ├── preprocessing
-│   ├── R
-│   └── tests
-├── docs
-│   └── source
-├── model_garden
-├── notebooks
-│   ├── colab
-│   ├── colabJB
-│   ├── colabJH
-│   ├── colabKoay
-│   ├── colabPan
-│   ├── colabSeb
-│   ├── exploratory
-│   ├── mask_rcnn
-│   │   ├── testing
-│   │   └── training
-│   ├── reports
-│   └── turing
-├── report
-│   ├── figures
-│   └── sections
-└── requirements
+├── detectree2/              # Python package (models, data loading, preprocessing, tests, etc.)
+│   ├── data_loading/
+│   ├── models/
+│   ├── preprocessing/
+│   ├── R/
+│   └── tests/
+├── docker/                  # Container recipe for reproducible builds
+│   └── Dockerfile
+├── docs/                    # Sphinx documentation sources
+│   └── source/
+├── model_garden/            # Pre-trained model metadata
+├── notebooks/               # Exploratory, Colab, and Turing workflows
+│   ├── colab/
+│   ├── exploratory/
+│   ├── reports/
+│   └── turing/
+├── report/                  # Paper figures and manuscript sections
+│   ├── figures/
+│   └── sections/
+├── requirements/            # Runtime, test, and dev requirement files
+│   ├── requirements.txt
+│   ├── dev-requirements.txt
+│   └── test-requirements.txt
+├── setup.cfg                # Lint/format config used by CI
+├── setup.py
+└── .setup_scripts/          # Helper scripts for local tooling
 ```
 
 ## Code formatting
 
-To automatically format your code, make sure you have `black` installed (`pip install black`) and call
-```black .```
-from within the project directory.
+We rely on the `pre-commit` hooks defined in `.pre-commit-config.yaml` to keep formatting, linting, and type checking consistent (yapf, isort, flake8, and mypy share the configuration in `setup.cfg`).
+
+```bash
+python -m pip install pre-commit -r requirements/dev-requirements.txt
+pre-commit install
+pre-commit run --all-files
+```
+
+If you need to run the tools individually you can use:
+
+```bash
+yapf -ir detectree2
+isort detectree2
+flake8 detectree2
+mypy detectree2
+```
 
 ---
 
