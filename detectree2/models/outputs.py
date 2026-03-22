@@ -3,9 +3,9 @@
 Funtions to process model predictions into outputs for model evaluation and
 mapping crowns in geographic space.
 """
+from __future__ import annotations
 import glob
 import json
-import os
 import re
 from http.client import REQUEST_URI_TOO_LONG  # noqa: F401
 from pathlib import Path
@@ -19,7 +19,7 @@ import pycocotools.mask as mask_util
 import rasterio
 from rasterio.crs import CRS
 from shapely.affinity import scale
-from shapely.geometry import Polygon, box, shape
+from shapely.geometry import Polygon, box
 from shapely.ops import orient
 from tqdm import tqdm
 
@@ -36,8 +36,7 @@ def polygon_from_mask(masked_arr):
     https://github.com/hazirbas/coco-json-converter/blob/master/generate_coco_json.py <-- adapted from here
     """
 
-    contours, _ = cv2.findContours(
-        masked_arr, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(masked_arr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     segmentation = []
     for contour in contours:
@@ -50,7 +49,7 @@ def polygon_from_mask(masked_arr):
                 contour.extend(contour[:2])  # small artifacts due to this?
             segmentation.append(contour)
 
-    [x, y, w, h] = cv2.boundingRect(masked_arr)
+    # [x, y, w, h] = cv2.boundingRect(masked_arr)
 
     if len(segmentation) > 0:
         return segmentation[0]  # , [x, y, w, h], area
@@ -64,89 +63,87 @@ def to_eval_geojson(directory=None):  # noqa:N803
     Reproject the crowns to overlay with the cropped crowns and cropped pngs.
     Another copy is produced to overlay with pngs.
     """
+    directory = Path(directory)
 
-    entries = os.listdir(directory)
+    for file in directory.iterdir():
+        if file.suffix != ".json":
+            continue
 
-    for file in entries:
-        if ".json" in file:
+        # create a dictionary for each file to store data used multiple times
+        img_dict = {"filename": file.name}
 
-            # create a dictionary for each file to store data used multiple times
-            img_dict = {}
-            img_dict["filename"] = file
-
-            file_mins = file.replace(".json", "")
-            file_mins_split = file_mins.split("_")
-            img_dict["minx"] = file_mins_split[-5]
-            img_dict["miny"] = file_mins_split[-4]
-            epsg = file_mins_split[-1]
-            # create a geofile for each tile --> the EPSG value should be done
-            # automatically
-            geofile = {
-                "type": "FeatureCollection",
-                "crs": {
-                    "type": "name",
-                    "properties": {
-                        "name": "urn:ogc:def:crs:EPSG::" + epsg
-                    },
+        file_mins = file.stem
+        file_mins_split = file_mins.split("_")
+        img_dict["minx"] = file_mins_split[-5]
+        img_dict["miny"] = file_mins_split[-4]
+        epsg = file_mins_split[-1]
+        # create a geofile for each tile --> the EPSG value should be done
+        # automatically
+        geofile = {
+            "type": "FeatureCollection",
+            "crs": {
+                "type": "name",
+                "properties": {
+                    "name": f"urn:ogc:def:crs:EPSG::{epsg}"
                 },
-                "features": [],
-            }
+            },
+            "features": [],
+        }
 
-            # load the json file we need to convert into a geojson
-            with open(directory + "/" + img_dict["filename"]) as prediction_file:
-                datajson = json.load(prediction_file)
+        # load the json file we need to convert into a geojson
+        with file.open() as prediction_file:
+            datajson = json.load(prediction_file)
 
-            img_dict["width"] = datajson[0]["segmentation"]["size"][0]
-            img_dict["height"] = datajson[0]["segmentation"]["size"][1]
-            # print(img_dict)
+        img_dict["width"] = datajson[0]["segmentation"]["size"][0]
+        img_dict["height"] = datajson[0]["segmentation"]["size"][1]
+        # print(img_dict)
 
-            # json file is formated as a list of segmentation polygons so cycle through each one
-            for crown_data in datajson:
-                # just a check that the crown image is correct
-                if img_dict["minx"] + "_" + img_dict["miny"] in crown_data["image_id"]:
-                    crown = crown_data["segmentation"]
-                    confidence_score = crown_data["score"]
+        # json file is formated as a list of segmentation polygons so cycle through each one
+        for crown_data in datajson:
+            # just a check that the crown image is correct
+            if f"{img_dict['minx']}_{img_dict['miny']}" not in crown_data["image_id"]:
+                continue
 
-                    # changing the coords from RLE format so can be read as numbers, here the numbers are
-                    # integers so a bit of info on position is lost
-                    mask_of_coords = mask_util.decode(crown)
-                    crown_coords = polygon_from_mask(mask_of_coords)
-                    if crown_coords == 0:
-                        continue
-                    rescaled_coords = []
+            crown = crown_data["segmentation"]
+            confidence_score = crown_data["score"]
 
-                    # coords from json are in a list of [x1, y1, x2, y2,... ] so convert them to [[x1, y1], ...]
-                    # format and at the same time rescale them so they are in the correct position for QGIS
-                    for c in range(0, len(crown_coords), 2):
-                        x_coord = crown_coords[c]
-                        y_coord = crown_coords[c + 1]
-                        # TODO: make flexible to deal with hemispheres
-                        if epsg == "26917":
-                            rescaled_coords.append([x_coord, -y_coord])
-                        else:
-                            rescaled_coords.append(
-                                [x_coord, -y_coord + int(img_dict["height"])])
+            # changing the coords from RLE format so can be read as numbers, here the numbers are
+            # integers so a bit of info on position is lost
+            mask_of_coords = mask_util.decode(crown)
+            crown_coords = polygon_from_mask(mask_of_coords)
+            if crown_coords == 0:
+                continue
 
-                    geofile["features"].append({
-                        "type": "Feature",
-                        "properties": {
-                            "Confidence_score": confidence_score
-                        },
-                        "geometry": {
-                            "type": "Polygon",
-                            "coordinates": [rescaled_coords],
-                        },
-                    })
+            rescaled_coords = []
+            # coords from json are in a list of [x1, y1, x2, y2,... ] so convert them to [[x1, y1], ...]
+            # format and at the same time rescale them so they are in the correct position for QGIS
+            for c in range(0, len(crown_coords), 2):
+                x_coord = crown_coords[c]
+                y_coord = crown_coords[c + 1]
+                # TODO: make flexible to deal with hemispheres
+                if epsg == "26917":
+                    rescaled_coords.append([x_coord, -y_coord])
+                else:
+                    rescaled_coords.append([x_coord, -y_coord + int(img_dict["height"])])
 
-            # Check final form is correct - compare to a known geojson file if
-            # error appears.
-            # print(geofile)
+            geofile["features"].append({
+                "type": "Feature",
+                "properties": {
+                    "Confidence_score": confidence_score
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [rescaled_coords],
+                },
+            })
 
-            output_geo_file = os.path.join(
-                directory, img_dict["filename"].replace(".json", "_eval.geojson"))
-            # print(output_geo_file)
-            with open(output_geo_file, "w") as dest:
-                json.dump(geofile, dest)
+        # Check final form is correct - compare to a known geojson file if error appears.
+        # print(geofile)
+
+        output_geo_file = file.with_name(f"{file.stem}_eval.geojson")
+        # print(output_geo_file)
+        with output_geo_file.open("w") as dest:
+            json.dump(geofile, dest)
 
 
 def project_to_geojson(tiles_path, pred_fold=None, output_fold=None, multi_class: bool = False):  # noqa:N803
@@ -156,28 +153,26 @@ def project_to_geojson(tiles_path, pred_fold=None, output_fold=None, multi_class
     with PNGs.
 
     Args:
-        tiles_path (str): Path to the tiles folder.
-        pred_fold (str): Path to the predictions folder.
-        output_fold (str): Path to the output folder.
+        tiles_path (str | Path): Path to the tiles folder.
+        pred_fold (str | Path): Path to the predictions folder.
+        output_fold (str | Path): Path to the output folder.
 
     Returns:
         None
     """
-    Path(output_fold).mkdir(parents=True, exist_ok=True)
-    entries = list(Path(pred_fold) / file for file in os.listdir(pred_fold) if Path(file).suffix == ".json")
-    total_files = len(entries)
-    print(f"Projecting {total_files} files")
+    output_fold = Path(output_fold)
 
-    for idx, filename in enumerate(entries, start=1):
-        if idx % 50 == 0:
-            print(f"Projecting file {idx} of {total_files}: {filename}")
+    output_fold.mkdir(parents=True, exist_ok=True)
+    entries = [file for file in Path(pred_fold).iterdir() if file.suffix == ".json"]
 
-        tifpath = Path(tiles_path) / Path(filename.name.replace("Prediction_", "")).with_suffix(".tif")
+    for file in tqdm(entries, desc="Projecting files",):
 
-        data = rasterio.open(tifpath)
-        epsg = CRS.from_string(data.crs.wkt)
-        epsg = epsg.to_epsg()
-        raster_transform = data.transform
+        stem = file.stem[len('Prediction_'):] if file.stem.startswith('Prediction_') else file.stem
+        tifpath = Path(tiles_path) / f"{stem}.tif"
+
+        with rasterio.open(tifpath) as data:
+            epsg = data.crs.to_epsg()
+            raster_transform = data.transform
 
         geofile = {
             "type": "FeatureCollection",
@@ -191,14 +186,14 @@ def project_to_geojson(tiles_path, pred_fold=None, output_fold=None, multi_class
         }  # type: GeoFile
 
         # load the json file we need to convert into a geojson
-        with open(filename, "r") as prediction_file:
+        with file.open("r") as prediction_file:
             datajson = json.load(prediction_file)
 
         # json file is formated as a list of segmentation polygons so cycle through each one
         for crown_data in datajson:
             if multi_class:
                 category = crown_data["category_id"]
-                # print(category)
+
             crown = crown_data["segmentation"]
             confidence_score = crown_data["score"]
 
@@ -206,7 +201,7 @@ def project_to_geojson(tiles_path, pred_fold=None, output_fold=None, multi_class
             # integers so a bit of info on position is lost
             mask_of_coords = mask_util.decode(crown)
             crown_coords = polygon_from_mask(mask_of_coords)
-            if crown_coords == 0:
+            if not crown_coords:
                 continue
 
             crown_coords_array = np.array(crown_coords).reshape(-1, 2)
@@ -214,47 +209,34 @@ def project_to_geojson(tiles_path, pred_fold=None, output_fold=None, multi_class
                                                        rows=crown_coords_array[:, 1],
                                                        cols=crown_coords_array[:, 0])
             moved_coords = list(zip(x_coords, y_coords))
+
+            feature: Feature = {
+                "type": "Feature",
+                "properties": {
+                    "Confidence_score": confidence_score,
+                },
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [moved_coords],
+                },
+            }
+
             if multi_class:
-                geofile["features"].append({
-                    "type": "Feature",
-                    "properties": {
-                        "Confidence_score": confidence_score,
-                        "category": category,
-                    },
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [moved_coords],
-                    },
-                })
-            else:
-                geofile["features"].append({
-                    "type": "Feature",
-                    "properties": {
-                        "Confidence_score": confidence_score
-                    },
-                    "geometry": {
-                        "type": "Polygon",
-                        "coordinates": [moved_coords],
-                    },
-                })
-                # print(geofile["features"])
+                feature["properties"]["category"] = category
 
-        output_geo_file = os.path.join(output_fold, filename.with_suffix(".geojson").name)
+            geofile["features"].append(feature)
 
-        with open(output_geo_file, "w") as dest:
+        output_geo_file = output_fold / file.with_suffix(".geojson").name
+
+        with output_geo_file.open("w") as dest:
             json.dump(geofile, dest)
 
 
 def filename_geoinfo(filename):
     """Return geographic info of a tile from its filename."""
-    parts = os.path.basename(filename).replace(".geojson", "").split("_")
-
-    parts = [int(part) for part in parts[-5:]]  # type: ignore
-    minx = parts[0]
-    miny = parts[1]
-    width = parts[2]
-    buffer = parts[3]
-    crs = parts[4]
+    name = Path(filename).stem
+    parts = name.split("_")[-5:]
+    minx, miny, width, buffer, crs = map(int, parts)
     return (minx, miny, width, buffer, crs)
 
 
@@ -308,25 +290,18 @@ def stitch_crowns(folder: str, shift: int = 1):
         gpd.GeoDataFrame: A GeoDataFrame containing all the crowns.
     """
     crowns_path = Path(folder)
-    files = list(crowns_path.glob("*geojson"))
-    if len(files) == 0:
-        raise FileNotFoundError("No geojson files found in folder.")
+    files = list(crowns_path.glob("*.geojson"))
+    if not files:
+        raise FileNotFoundError(f"No geojson files found in {crowns_path}.")
 
     _, _, _, _, crs = filename_geoinfo(files[0])
 
-    total_files = len(files)
     crowns_list = []
 
-    for idx, file in enumerate(files, start=1):
-        if idx % 50 == 0:
-            print(f"Stitching file {idx} of {total_files}: {file}")
-
+    for file in tqdm(files, desc="Stitching crowns", unit="file"):
         crowns_tile = gpd.read_file(file)  # This throws a huge amount of warnings fiona closed ring detected
-
         geo = box_filter(file, shift)
-
         crowns_tile = gpd.sjoin(crowns_tile, geo, "inner", "within")
-
         crowns_list.append(crowns_tile)
 
     crowns = pd.concat(crowns_list, ignore_index=True)
@@ -344,17 +319,27 @@ def calc_iou(shape1, shape2):
     return iou
 
 
-def clean_crowns(crowns,
-                iou_threshold= 0.7,
-                confidence= 0.2,
-                area_threshold = 2,
-                field= "Confidence_score",
-                verbose= True) -> gpd.GeoDataFrame:
+def clean_crowns(
+    crowns,
+    iou_threshold=0.7,
+    confidence=0.2,
+    area_threshold=2,
+    field="Confidence_score",
+    containment_threshold=0.85,
+    verbose=True,
+) -> gpd.GeoDataFrame:
     """
     Clean overlapping crowns by first identifying all candidate overlapping pairs via a spatial join,
     then clustering crowns into connected components (where an edge is added if two crowns have IoU
-    above a threshold), and finally keeping the best crown (by confidence or any given field) in each cluster.
-        
+    above a threshold, or one crown is largely contained within the other), and finally keeping the
+    best crown (by confidence or any given field) in each cluster.
+
+    The containment check is important because IoU alone misses nested crowns: when a small crown
+    sits inside a much larger one, IoU is low (the union is dominated by the large crown). The
+    containment check merges these pairs so that the most confident crown wins. If the small crown
+    is more confident, the large one is removed — and post_clean can then fill the gap with other
+    crowns.
+
     Args:
         crowns (gpd.GeoDataFrame): Crowns to be cleaned.
         iou_threshold (float, optional): IoU threshold that determines whether crowns are overlapping.
@@ -363,6 +348,9 @@ def clean_crowns(crowns,
         area_threshold (float, optional): Minimum area of crowns to be retained. Defaults to 2m2 (assuming UTM).
         field (str): Field to used to prioritise selection of crowns. Defaults to "Confidence_score" but this should
             be changed to "Area" if using a model that outputs area.
+        containment_threshold (float, optional): Threshold for the containment ratio
+            (intersection area / smaller crown area). When exceeded, the pair is merged and the most
+            confident crown wins — just like IoU. Set to None to disable. Defaults to 0.85.
 
     Returns:
         gpd.GeoDataFrame: Cleaned crowns.
@@ -378,7 +366,7 @@ def clean_crowns(crowns,
 
     # 2. Use a spatial join to quickly find all candidate overlapping pairs.
     #    The join will pair each crown with any crown whose bounding box intersects.
-    print("clearn_crowns: Performing spatial join...")
+    print("clean_crowns: Performing spatial join...")
     join = gpd.sjoin(crowns, crowns, how="inner", predicate="intersects")
     # Remove self-joins (where a crown is paired with itself).
     join = join[join.index != join.index_right]
@@ -399,17 +387,37 @@ def clean_crowns(crowns,
         if rx != ry:
             parent[ry] = rx
 
-    # 4. For each candidate pair, compute IoU and, if it exceeds the threshold, merge the groups.
-    for idx, row in tqdm(join.iterrows(), total=len(join), desc="clean_crowns: Processing candidate pairs", smoothing=0, disable=not verbose):
-        i = row.name           # index from left table (crowns)
-        j = row["index_right"] # index from right table (crowns)
+    # 4. For each candidate pair, check IoU and containment; merge if either exceeds its threshold.
+    #    The most confident crown in each merged cluster always wins (step 6).
+    for idx, row in tqdm(
+        join.iterrows(),
+        total=len(join),
+        desc="clean_crowns: Processing candidate pairs",
+        smoothing=0,
+        disable=not verbose,
+    ):
+        i = row.name  # index from left table (crowns)
+        j = row["index_right"]  # index from right table (crowns)
         # To avoid duplicate work, skip if i and j are already in the same group.
         if find(i) == find(j):
             continue
-        # Compute the IoU for the pair.
-        iou_val = calc_iou(crowns.at[i, "geometry"], crowns.at[j, "geometry"])
+
+        geom_i = crowns.at[i, "geometry"]
+        geom_j = crowns.at[j, "geometry"]
+        intersection_area = geom_i.intersection(geom_j).area
+
+        # IoU check
+        union_area = geom_i.area + geom_j.area - intersection_area
+        iou_val = intersection_area / union_area if union_area > 0 else 0
         if iou_val > iou_threshold:
             union(i, j)
+            continue
+
+        # Containment check: is the smaller crown mostly inside the larger one?
+        if containment_threshold is not None:
+            min_area = min(geom_i.area, geom_j.area)
+            if min_area > 0 and (intersection_area / min_area) > containment_threshold:
+                union(i, j)
 
     # 5. Group crowns by their union-find root.
     groups: Dict[int, List] = {}
@@ -427,51 +435,75 @@ def clean_crowns(crowns,
     # 7. Assemble the cleaned crowns.
     cleaned_crowns = crowns.loc[selected_indices].copy()
 
-
     return gpd.GeoDataFrame(cleaned_crowns, crs=crowns.crs).reset_index(drop=True)
 
 
 def post_clean(unclean_df: gpd.GeoDataFrame,
                clean_df: gpd.GeoDataFrame,
                iou_threshold: float = 0.3,
-               field: str = "Confidence_score") -> gpd.GeoDataFrame:
+               field: str = "Confidence_score",
+               max_iterations: int = 5,
+               verbose: bool = True) -> gpd.GeoDataFrame:
     """Fill in the gaps left by clean_crowns.
+
+    Takes the original (unclean) crowns and the cleaned set, then iteratively adds back crowns
+    from the unclean set that do not significantly overlap with any cleaned crown. Each round,
+    the combined result is re-cleaned to handle mutual overlaps among the newly added crowns.
+    Iteration continues until no new crowns are added or ``max_iterations`` is reached.
 
     Args:
         unclean_df (gpd.GeoDataFrame): Unclean crowns.
         clean_df (gpd.GeoDataFrame): Clean crowns.
-        iou_threshold (float, optional): IoU threshold that determines whether predictions are considered overlapping.
-        crowns are overlapping. Defaults to 0.3.
+        iou_threshold (float, optional): IoU threshold that determines whether predictions are
+            considered overlapping. Defaults to 0.3.
+        field (str): Field used to prioritise selection of crowns. Defaults to "Confidence_score".
+        max_iterations (int, optional): Maximum number of gap-filling rounds. Defaults to 5.
+        verbose (bool, optional): Print progress information. Defaults to True.
     """
-    # Spatial join between unclean and clean dataframes using the new syntax
-    joined_df = gpd.sjoin(unclean_df, clean_df, how="inner", predicate="intersects")
+    # Fix invalid geometries once upfront, not per-row
+    unclean_df = unclean_df.copy()
+    unclean_df["geometry"] = unclean_df.geometry.buffer(0)
 
-    to_remove = []
-    for idx, row in joined_df.iterrows():
-        # Using the default suffix 'left' for columns from the unclean_df and 'right' for columns from the clean_df
-        unclean_shape = unclean_df.loc[idx, "geometry"]
-        clean_shape = clean_df.loc[row["index_right"], "geometry"]
+    current_clean = clean_df.copy()
+    current_clean["geometry"] = current_clean.geometry.buffer(0)
 
-        unclean_shape = unclean_shape.buffer(0)
-        clean_shape = clean_shape.buffer(0)
+    for iteration in range(1, max_iterations + 1):
+        prev_count = len(current_clean)
 
-        intersection_area = unclean_shape.intersection(clean_shape).area
-        union_area = unclean_shape.union(clean_shape).area
-        iou = intersection_area / union_area
+        # Spatial join to find candidate overlapping pairs (bbox intersection)
+        joined_df = gpd.sjoin(unclean_df, current_clean, how="inner", predicate="intersects")
 
-        if iou > iou_threshold:
-            to_remove.append(idx)
+        # Use a set for O(1) lookup; skip further pairs once an unclean crown is marked
+        to_remove = set()
+        for idx, row in joined_df.iterrows():
+            if idx in to_remove:
+                continue  # Already marked for removal, skip remaining pairs
 
-    reduced_unclean_df = unclean_df.drop(index=to_remove)
+            iou = calc_iou(unclean_df.loc[idx, "geometry"], current_clean.loc[row["index_right"], "geometry"])
+            if iou > iou_threshold:
+                to_remove.add(idx)
 
-    # Concatenate the reduced unclean dataframe with the clean dataframe
-    result_df = pd.concat([clean_df, reduced_unclean_df], ignore_index=True)
+        reduced_unclean_df = unclean_df.drop(index=to_remove)
 
-    result_df.reset_index(drop=True, inplace=True)
+        # Concatenate the reduced unclean dataframe with the clean dataframe
+        result_df = pd.concat([current_clean, reduced_unclean_df], ignore_index=True)
+        result_df.reset_index(drop=True, inplace=True)
 
-    reclean_df = clean_crowns(result_df, iou_threshold=iou_threshold, field=field)
+        # Re-clean the combined set to resolve any mutual overlaps among newly added crowns
+        current_clean = clean_crowns(result_df, iou_threshold=iou_threshold, field=field, verbose=verbose)
+        current_clean.reset_index(drop=True, inplace=True)
 
-    return reclean_df.reset_index(drop=True)
+        new_count = len(current_clean)
+        if verbose:
+            print(f"post_clean: iteration {iteration} — {prev_count} → {new_count} crowns "
+                  f"(+{new_count - prev_count})")
+
+        if new_count == prev_count:
+            if verbose:
+                print("post_clean: converged, no new crowns added.")
+            break
+
+    return current_clean
 
 
 def load_geopandas_dataframes(folder):
@@ -616,39 +648,42 @@ def combine_and_average_polygons(gdfs, iou=0.9):
 
 def clean_predictions(directory, iou_threshold=0.7):
     """Clean predictions prior to accuracy assessment."""
-    pred_fold = directory
-    entries = os.listdir(pred_fold)
+    pred_fold = Path(directory)
 
-    for file in entries:
-        if ".json" in file:
-            print(file)
-            with open(pred_fold + "/" + file) as prediction_file:
-                datajson = json.load(prediction_file)
+    for file in pred_fold.iterdir():
+        if file.suffix != ".json":
+            continue
 
-            crowns = gpd.GeoDataFrame()
+        print(file.name)
+        with file.open("r") as prediction_file:
+            datajson = json.load(prediction_file)
 
-            for shp in datajson:
-                crown_coords = polygon_from_mask(
-                    mask_util.decode(shp["segmentation"]))
-                if crown_coords == 0:
-                    continue
-                rescaled_coords = []
-                # coords from json are in a list of [x1, y1, x2, y2,... ] so convert them to [[x1, y1], ...]
-                # format and at the same time rescale them so they are in the correct position for QGIS
-                for c in range(0, len(crown_coords), 2):
-                    x_coord = crown_coords[c]
-                    y_coord = crown_coords[c + 1]
-                    rescaled_coords.append([x_coord, y_coord])
-                crowns = pd.concat([crowns, gpd.GeoDataFrame({'Confidence_score': shp['score'],
-                                                              'geometry': [Polygon(rescaled_coords)]},
-                                                             geometry=[Polygon(rescaled_coords)])])
+        crowns = gpd.GeoDataFrame()
 
-            crowns = crowns.reset_index().drop('index', axis=1)
-            crowns, indices = clean_outputs(crowns, iou_threshold)
-            datajson_reduced = [datajson[i] for i in indices]
-            print("data_json:", len(datajson), " ", len(datajson_reduced))
-            with open(pred_fold + "/" + file, "w") as dest:
-                json.dump(datajson_reduced, dest)
+        for shp in datajson:
+            crown_coords = polygon_from_mask(
+                mask_util.decode(shp["segmentation"]))
+            if crown_coords == 0:
+                continue
+
+            # convert coords from json [x1, y1, x2, y2,... ] -> [[x1, y1], ...]
+            # format and at the same time rescale them so they are in the correct position for QGIS
+            rescaled_coords = [
+                [crown_coords[i], crown_coords[i + 1]]
+                for i in range(0, len(crown_coords), 2)
+            ]
+
+            crowns = pd.concat([crowns, gpd.GeoDataFrame({'Confidence_score': shp['score'],
+                                                           'geometry': [Polygon(rescaled_coords)]},
+                                                           geometry='geometry')])
+
+        crowns = crowns.reset_index(drop=True)
+        crowns, indices = clean_outputs(crowns, iou_threshold)
+        datajson_reduced = [datajson[i] for i in indices]
+        print(f"data_json: {len(datajson)} {len(datajson_reduced)}")
+
+        with file.open("w") as dest:
+            json.dump(datajson_reduced, dest)
 
 
 def clean_outputs(crowns: gpd.GeoDataFrame, iou_threshold=0.7):

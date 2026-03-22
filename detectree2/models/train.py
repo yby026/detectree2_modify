@@ -3,8 +3,8 @@
 Classes and functions to train a model based on othomosaics and corresponding
 manual crown data.
 """
+from __future__ import annotations
 import datetime
-import glob
 import json
 import logging
 import os
@@ -43,10 +43,13 @@ from detectron2.evaluation import COCOEvaluator, verify_results
 from detectron2.evaluation.coco_evaluation import instances_to_coco_json
 from detectron2.layers.wrappers import Conv2d
 from detectron2.structures import BoxMode
-from detectron2.utils.events import get_event_storage  # noqa:F401
-from detectron2.utils.events import EventStorage
+from detectron2.utils.events import (  # noqa:F401
+    EventStorage,
+    get_event_storage,
+)
 from detectron2.utils.logger import log_every_n_seconds
 from detectron2.utils.visualizer import ColorMode, Visualizer
+from tqdm import tqdm
 
 from detectree2.models.outputs import clean_crowns
 from detectree2.preprocessing.tiling import load_class_mapping
@@ -120,6 +123,14 @@ class FlexibleDatasetMapper(DatasetMapper):
                     raise ValueError(f"Image data is None for file: {dataset_dict['file_name']}")
                 # Transpose image dimensions to match expected format (H, W, C)
                 img = np.transpose(img, (1, 2, 0)).astype("float32")
+
+            # Basic band-count guard for multispectral inputs
+            expected_bands = int(getattr(self.cfg.INPUT, "NUM_IN_CHANNELS", img.shape[2]))
+            if img.shape[2] != expected_bands:
+                self.logger.warning(
+                    f"Loaded image has {img.shape[2]} bands but cfg expects {expected_bands}. "
+                    "This may cause a model input mismatch."
+                )
 
             # Size check similar to utils.check_image_size
             if img.shape[:2] != (dataset_dict.get("height"), dataset_dict.get("width")):
@@ -368,8 +379,9 @@ class VisualizerHook(HookBase):
                         img = nn.functional.interpolate(img.unsqueeze(0),
                                                         size=output["instances"].image_size).squeeze(0)
                         img = np.transpose(img[:3], (1, 2, 0))
-                        v = Visualizer(img, metadata=MetadataCatalog.get(self.trainer.cfg.DATASETS.TEST[0]), scale=1)
-                        #v = v.draw_instance_predictions(output['instances'][output['instances'].scores > 0.5].to("cpu"))
+                        metadata = MetadataCatalog.get(self.trainer.cfg.DATASETS.TEST[0])
+                        v = Visualizer(img, metadata=metadata, scale=1)
+                        # v = v.draw_instance_predictions(output['instances'][output['instances'].scores > 0.5].to("cpu"))
 
                         masks = output["instances"].pred_masks.to("cpu").numpy()
                         scores = output["instances"].scores.to("cpu").numpy()
@@ -383,12 +395,13 @@ class VisualizerHook(HookBase):
                             else:
                                 geoms.append(None)
 
-                        gdf = gpd.GeoDataFrame(data={
-                            "Confidence_score": scores,
-                            "indices": list(range(len(scores)))
-                        },
-                                               geometry=geoms,
-                                               crs="EPSG:3857")
+                        gdf = gpd.GeoDataFrame(
+                            data={
+                                "Confidence_score": scores,
+                                "indices": list(range(len(scores)))
+                            },
+                            geometry=geoms,
+                            crs="EPSG:3857")
 
                         gdf = clean_crowns(gdf, iou_threshold=0.3, confidence=0.3, area_threshold=0, verbose=False)
 
@@ -398,7 +411,7 @@ class VisualizerHook(HookBase):
 
                         if self.trainer.cfg.IMGMODE == "rgb":
                             image = np.transpose(image.astype("uint8"), (2, 0, 1))
-                        else:  #ms
+                        else:  # ms
                             image = np.transpose(image.astype("uint8"), (2, 0, 1))[[1, 0, 2]]
 
                         storage.put_image(f"val/prediction/{img_data['file_name'].split('/')[-1]}", image)
@@ -493,6 +506,21 @@ class MyTrainer(DefaultTrainer):
             # at the next iteration
             self.start_iter = self.iter + 1
 
+        # Early guard for MS: expected channels vs model conv1
+        try:
+            desired_channels = int(getattr(self.cfg.INPUT, "NUM_IN_CHANNELS", 3))
+            model_in_channels = int(self.model.backbone.bottom_up.stem.conv1.weight.shape[1])
+        except Exception:
+            desired_channels = 3
+            model_in_channels = 3
+
+        if self.cfg.IMGMODE == "ms" and desired_channels != model_in_channels:
+            raise RuntimeError(
+                f"Input channel mismatch: cfg expects {desired_channels} bands for multispectral input, "
+                f"but model conv1 expects {model_in_channels}. Please adapt the backbone's first conv to "
+                f"{desired_channels} channels or use 3-band inputs."
+            )
+
         if self.cfg.MODEL.WEIGHTS:
             device = self.model.backbone.bottom_up.stem.conv1.weight.device
             req_grad = self.model.backbone.bottom_up.stem.conv1.weight.requires_grad
@@ -522,14 +550,16 @@ class MyTrainer(DefaultTrainer):
                 logger = logging.getLogger("detectree2")
                 if input_channels_in_checkpoint != 3:
                     logger.warning(
-                        "Input channel modification only works if checkpoint was trained on RGB images (3 channels). The first three channels will be copied and then repeated in the model."
+                        "Input channel modification only works if checkpoint was trained on RGB images (3 channels). "
+                        "The first three channels will be copied and then repeated in the model."
                     )
                 logger.warning(
-                    "Mismatch in input channels in checkpoint and model, meaning fvcommon would not have been able to automatically load them. Adjusting weights for 'backbone.bottom_up.stem.conv1.weight' manually."
+                    "Mismatch in input channels in checkpoint and model, meaning fvcommon would not have been able "
+                    "to automatically load them. Adjusting weights for 'backbone.bottom_up.stem.conv1.weight' manually."
                 )
                 with torch.no_grad():
                     self.model.backbone.bottom_up.stem.conv1.weight[:, :3] = checkpoint[:, :3]
-                multiply_conv1_weights(self.model)
+                # Do not silently expand conv1 here; rely on explicit model adaptation for MS
                 self.model.backbone.bottom_up.stem.conv1.weight.to(device)
                 self.model.backbone.bottom_up.stem.conv1.weight.requires_grad = req_grad
 
@@ -705,7 +735,7 @@ class MyTrainer(DefaultTrainer):
         return DA_MaskRCNN.from_config(cfg)
 
 
-def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
+def get_tree_dicts(directory: str | Path, class_mapping: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
     """Get the tree dictionaries.
 
     Args:
@@ -720,26 +750,28 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
 
     dataset_dicts = []
 
-    for filename in [file for file in os.listdir(directory) if file.endswith(".geojson")]:
-        json_file = os.path.join(directory, filename)
+    for json_file in Path(directory).glob("*.geojson"):
         with open(json_file) as f:
             img_anns = json.load(f)
 
         record: Dict[str, Any] = {}
-        filename = img_anns["imagePath"]
+        file_path = Path(img_anns["imagePath"])
 
         # Make sure we have the correct height and width
         # If image path ends in .png use cv2 to get height and width else if image path ends in .tif use rasterio
-        if filename.endswith(".png"):
-            height, width = cv2.imread(filename).shape[:2]
-        elif filename.endswith(".tif"):
-            with rasterio.open(filename) as src:
+        if file_path.suffix == ".png":
+            img = cv2.imread(str(file_path))
+            if img is None:
+                continue
+            height, width = img.shape[:2]
+        elif file_path.suffix == ".tif":
+            with rasterio.open(str(file_path)) as src:
                 height, width = src.shape
 
-        record["file_name"] = filename
+        record["file_name"] = str(file_path)
         record["height"] = height
         record["width"] = width
-        record["image_id"] = filename[0:400]
+        record["image_id"] = str(file_path)[0:400]
         record["annotations"] = {}
         # print(filename[0:400])
 
@@ -747,10 +779,10 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
         for features in img_anns["features"]:
             anno = features["geometry"]
             if anno["type"] != "Polygon" and anno["type"] != "MultiPolygon":
-                print("Skipping annotation of type", anno["type"], "in file", filename)
+                print("Skipping annotation of type", anno["type"], "in file", file_path)
                 continue
             px = [a[0] for a in anno["coordinates"][0]]
-            py = [np.array(height) - a[1] for a in anno["coordinates"][0]]
+            py = [height - a[1] for a in anno["coordinates"][0]]
             poly = [(x, y) for x, y in zip(px, py)]
             poly = [p for x in poly for p in x]
 
@@ -761,7 +793,12 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
                 category_id = 0  # Default to "tree" if no class mapping is provided
 
             obj = {
-                "bbox": [np.min(px), np.min(py), np.max(px), np.max(py)],
+                "bbox": [
+                    np.min(np.array(px)),
+                    np.min(np.array(py)),
+                    np.max(np.array(px)),
+                    np.max(np.array(py)),
+                ],
                 "bbox_mode": BoxMode.XYXY_ABS,
                 "segmentation": [poly],
                 "category_id": category_id,
@@ -776,7 +813,7 @@ def get_tree_dicts(directory: str, class_mapping: Optional[Dict[str, int]] = Non
     return dataset_dicts
 
 
-def combine_dicts(root_dir: str,
+def combine_dicts(root_dir: str | Path,
                   val_dir: int,
                   mode: str = "train",
                   class_mapping: Optional[Dict[str, int]] = None) -> List[Dict[str, Any]]:
@@ -788,7 +825,7 @@ def combine_dicts(root_dir: str,
     all except a specified validation directory, or only from the validation directory.
 
     Args:
-        root_dir (str): The root directory containing subdirectories with tree dictionaries.
+        root_dir (str | Path): The root directory containing subdirectories with tree dictionaries.
         val_dir (int): The index (1-based) of the validation directory to exclude or use depending on the mode.
         mode (str, optional): The mode of operation. Can be "train", "val", or "full".
                               "train" excludes the validation directory,
@@ -800,9 +837,8 @@ def combine_dicts(root_dir: str,
         List of combined dictionaries from the specified directories.
     """
     # Get the list of directories within the root directory
-    train_dirs = [
-        os.path.join(root_dir, dir) for dir in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, dir))
-    ]
+    root_dir = Path(root_dir)
+    train_dirs = [d for d in root_dir.iterdir() if d.is_dir()]
     # Handle the different modes for combining dictionaries
     if mode == "train":
         # Exclude the validation directory from the list of directories
@@ -822,22 +858,22 @@ def combine_dicts(root_dir: str,
     return tree_dicts
 
 
-def get_filenames(directory: str):
+def get_filenames(directory: str | Path):
     """Get the file names from the directory, handling both RGB (.png) and multispectral (.tif) images.
 
     Args:
-        directory (str): Directory of images to be predicted on.
+        directory (str | Path): Directory of images to be predicted on.
 
     Returns:
         tuple: A tuple containing:
             - dataset_dicts (list): List of dictionaries with 'file_name' keys.
             - mode (str): 'rgb' if .png files are used, 'ms' if .tif files are used.
     """
-    dataset_dicts = []
+    directory = Path(directory)
 
     # Get list of .png and .tif files
-    png_files = glob.glob(os.path.join(directory, "*.png"))
-    tif_files = glob.glob(os.path.join(directory, "*.tif"))
+    png_files = list(directory.glob("*.png"))
+    tif_files = list(directory.glob("*.tif"))
 
     if png_files and tif_files:
         # Both .png and .tif files are present, select only .png files
@@ -856,10 +892,7 @@ def get_filenames(directory: str):
         files = []
         mode = None
 
-    for filename in files:
-        file = {}
-        file["file_name"] = filename
-        dataset_dicts.append(file)
+    dataset_dicts = [{"file_name": str(f)} for f in files]
     return dataset_dicts, mode
 
 
@@ -1117,15 +1150,19 @@ def setup_cfg(
     cfg.RESIZE = resize
     cfg.INPUT.MIN_SIZE_TRAIN = 1000
     cfg.IMGMODE = imgmode  # "rgb" or "ms" (multispectral)
+    # Track intended input channels for early validation
+    cfg.INPUT.NUM_IN_CHANNELS = num_bands
     if num_bands > 3:
         # Adjust PIXEL_MEAN and PIXEL_STD for the number of bands
         default_pixel_mean = cfg.MODEL.PIXEL_MEAN
         default_pixel_std = cfg.MODEL.PIXEL_STD
         # Extend or truncate the PIXEL_MEAN and PIXEL_STD based on num_bands
-        cfg.MODEL.PIXEL_MEAN = (default_pixel_mean * (num_bands // len(default_pixel_mean)) +
-                                default_pixel_mean[:num_bands % len(default_pixel_mean)])
-        cfg.MODEL.PIXEL_STD = (default_pixel_std * (num_bands // len(default_pixel_std)) +
-                               default_pixel_std[:num_bands % len(default_pixel_std)])
+        cfg.MODEL.PIXEL_MEAN = (
+            default_pixel_mean * (num_bands // len(default_pixel_mean))
+            + default_pixel_mean[:num_bands % len(default_pixel_mean)])
+        cfg.MODEL.PIXEL_STD = (
+            default_pixel_std * (num_bands // len(default_pixel_std))
+            + default_pixel_std[:num_bands % len(default_pixel_std)])
     if visualize_training:
         cfg.VALIDATION_VIS_PERIOD = eval_period
     else:
@@ -1165,16 +1202,17 @@ def predictions_on_data(
     Returns:
         None
     """
-    pred_dir = os.path.join(directory, "predictions")
-    Path(pred_dir).mkdir(parents=True, exist_ok=True)
+    directory = Path(directory)
+    pred_dir = directory / "predictions"
+    pred_dir.mkdir(parents=True, exist_ok=True)
 
-    test_location = os.path.join(directory, "test")
+    test_location = directory / "test"
 
     if geos_exist:
         dataset_dicts = get_tree_dicts(test_location)
         if len(dataset_dicts) > 0:
-            sample_file = dataset_dicts[0]["file_name"]
-            _, mode = get_filenames(os.path.dirname(sample_file))
+            sample_file = Path(dataset_dicts[0]["file_name"])
+            _, mode = get_filenames(sample_file.parent)
         else:
             mode = None
     else:
@@ -1183,12 +1221,12 @@ def predictions_on_data(
     # Decide how many items to predict on
     num_to_pred = len(dataset_dicts) if num_predictions == 0 else num_predictions
 
-    for d in random.sample(dataset_dicts, num_to_pred):
-        file_name = d["file_name"]
-        file_ext = os.path.splitext(file_name)[1].lower()
+    for d in tqdm(random.sample(dataset_dicts, num_to_pred), desc='Predicting'):
+        file_name = Path(d["file_name"])
+        file_ext = file_name.suffix.lower()
         if file_ext == ".png":
             # RGB image, read with cv2
-            img = cv2.imread(file_name)
+            img = cv2.imread(str(file_name))
             if img is None:
                 print(f"Failed to read image {file_name} with cv2.")
                 continue
@@ -1216,14 +1254,12 @@ def predictions_on_data(
         v = v.draw_instance_predictions(outputs["instances"].to("cpu"))
 
         # Create the output file name
-        file_name_only = os.path.basename(file_name)
-        file_name_json = os.path.splitext(file_name_only)[0] + ".json"
-        output_file = os.path.join(pred_dir, f"Prediction_{file_name_json}")
+        output_file = pred_dir / f"Prediction_{file_name.stem}.json"
 
         if save:
             # Save predictions to JSON file
-            evaluations = instances_to_coco_json(outputs["instances"].to("cpu"), file_name)
-            with open(output_file, "w") as dest:
+            evaluations = instances_to_coco_json(outputs["instances"].to("cpu"), str(file_name))
+            with output_file.open("w") as dest:
                 json.dump(evaluations, dest)
 
 
@@ -1254,8 +1290,8 @@ def multiply_conv1_weights(model):
 
         # Multiply weights round-robin
         for i in range(in_channels):
-            new_weights[:, i, :, :] = old_weights[:, (i + 1) % 3, :, :] / ((in_channels // 3) +
-                                                                           (1 if i % 3 < in_channels % 3 else 0))
+            new_weights[:, i, :, :] = old_weights[:, (i + 1) % 3, :, :] / (
+                (in_channels // 3) + (1 if i % 3 < in_channels % 3 else 0))
 
         # Create a fresh Conv2d that has the correct shape
         new_conv = Conv2d(in_channels=in_channels,
@@ -1275,12 +1311,12 @@ def multiply_conv1_weights(model):
         model.backbone.bottom_up.stem.conv1 = new_conv
 
 
-def get_latest_model_path(output_dir: str) -> str:
+def get_latest_model_path(output_dir: str | Path) -> str:
     """
     Find the model file with the highest index in the specified output directory.
 
     Args:
-        output_dir (str): The directory where the model files are stored.
+        output_dir (str | Path): The directory where the model files are stored.
 
     Returns:
         str: The path to the model file with the highest index.
@@ -1288,13 +1324,11 @@ def get_latest_model_path(output_dir: str) -> str:
     # Regular expression to match model files with the pattern "model_X.pth"
     model_pattern = re.compile(r"model_(\d+)\.pth")
 
-    # List all files in the output directory
-    files = os.listdir(output_dir)
-
     # Find all files that match the pattern and extract their indices
     model_files = []
-    for f in files:
-        match = model_pattern.search(f)
+    output_dir = Path(output_dir)  # ADD THIS
+    for f in output_dir.iterdir():
+        match = model_pattern.match(f.name)
         if match:
             model_files.append((f, int(match.group(1))))
 
@@ -1305,7 +1339,7 @@ def get_latest_model_path(output_dir: str) -> str:
     latest_model_file = max(model_files, key=lambda x: x[1])[0]
 
     # Return the full path to the latest model file
-    return os.path.join(output_dir, latest_model_file)
+    return str(latest_model_file)
 
 
 if __name__ == "__main__":
