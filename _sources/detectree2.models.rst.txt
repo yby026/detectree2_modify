@@ -1,0 +1,77 @@
+detectree2.models package
+=========================
+
+Submodules
+----------
+
+detectree2.models.da\_mask\_rcnn module
+---------------------------------------
+
+.. automodule:: detectree2.models.da_mask_rcnn
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.evaluation module
+-----------------------------------
+
+.. automodule:: detectree2.models.evaluation
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.models module
+-------------------------------
+
+.. automodule:: detectree2.models.models
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.outputs module
+--------------------------------
+
+.. automodule:: detectree2.models.outputs
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.predict module
+--------------------------------
+
+.. automodule:: detectree2.models.predict
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.test module
+-----------------------------
+
+.. automodule:: detectree2.models.test
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.train module
+------------------------------
+
+.. automodule:: detectree2.models.train
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+detectree2.models.train\_tune module
+------------------------------------
+
+.. automodule:: detectree2.models.train_tune
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+Module contents
+---------------
+
+.. automodule:: detectree2.models
+   :members:
+   :undoc-members:
+   :show-inheritance:
